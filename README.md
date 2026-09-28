@@ -57,16 +57,43 @@ Unregister-ScheduledTask WorkBuddyDailyCheckin                     # 卸载
 
 ### macOS
 
+新机完整部署顺序：
+
 ```bash
-bash scripts/setup_launchd.sh install    # 安装并加载 launchd 任务
-bash scripts/setup_launchd.sh run        # 立即执行一次
+# 1. 装 Node（见下方"安装 Node"三选一）
+# 2. 拉项目并验证（--status 只读查询，不领取）
+git clone https://github.com/e703/workbuddy-checkin.git
+cd workbuddy-checkin
+node scripts/api_checkin.mjs --status
+# 3. 上一步返回 HTTP 200 后，安装定时任务（每天 00:05）
+bash scripts/setup_launchd.sh install
+```
+
+`--status` 的结果决定第 3 步前是否需要额外操作：HTTP 200 = 两平台静态钥一致，直接部署；报"解密 accessToken 失败" = Mac 构建静态钥不同，按"维护注意 §5"在 Mac 上重新提取后再带环境变量安装；Mac 客户端为 v5.6 前旧版时登录态是明文，脚本自动兼容。
+
+任务管理：
+
+```bash
+bash scripts/setup_launchd.sh run        # 立即执行一次（带随机延迟）
 bash scripts/setup_launchd.sh uninstall  # 卸载
 ```
 
-安装 Node（二选一，无需第三方依赖）：
+#### 安装 Node（三选一，无需第三方依赖）
 
 - 有 brew：`brew install node`（Node 18+）
-- 无 brew（如旧 Intel 机、macOS 12）：从 [nodejs.org](https://nodejs.org/) 下载官方 `darwin-x64` 安装包（.pkg，装到 `/usr/local/bin/node`；建议 22 LTS）。没有管理员权限则下载 .tar.xz 解压到用户目录，把 `bin` 加进 PATH 后再跑 `setup_launchd.sh`（脚本用 `command -v node` 定位，装在默认路径即可被找到）。
+- 无 brew：用 nvm（macOS 12 Intel 可用，无需管理员权限）：
+
+  ```bash
+  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  \. "$HOME/.nvm/nvm.sh"      # 当前 shell 立即生效（或重启 Terminal）
+  nvm install 22              # 下载的即官方 darwin-x64 二进制，Node 22 最低支持 macOS 10.15
+  node -v                     # 应输出 v22.x.x
+  ```
+
+  注意：`raw.githubusercontent.com` 在国内网络可能连不上，失败可走代理重试，或改用下面的 .pkg 直装。
+- 直装官方包：从 [nodejs.org](https://nodejs.org/) 下载 `darwin-x64` 安装包（.pkg，装到 `/usr/local/bin/node`；建议 22 LTS）。没有管理员权限则下载 .tar.xz 解压到用户目录，把 `bin` 加进 PATH 后再跑 `setup_launchd.sh`（脚本用 `command -v node` 定位，装在默认路径即可被找到）。
+
+**重要**：`setup_launchd.sh install` 必须在能找到 node 的 shell 里执行（nvm 用户即 nvm 已加载的 shell）——launchd 执行时 PATH 只有系统路径，看不到 `~/.nvm`；但 install 时脚本会把 `command -v node` 解析出的**绝对路径**写进 plist，所以只要 install 那一刻 node 可见，定时任务就永远能找到。在没加载 nvm 的 shell 里跑 install 会直接报"未找到 node"，不会埋隐患。
 
 安装 launchd 时，shell 里已设置的 `WORKBUDDY_*` 环境变量（如 `WORKBUDDY_STATIC_SECRET`、`WORKBUDDY_AUTH_FILE`）会被固化进 plist 的 `EnvironmentVariables`——launchd 不继承登录 shell 环境，所以 Mac 端专属配置必须在 install 时带上，例如：
 
@@ -74,7 +101,7 @@ bash scripts/setup_launchd.sh uninstall  # 卸载
 WORKBUDDY_STATIC_SECRET=<mac端提取的静态钥> bash scripts/setup_launchd.sh install
 ```
 
-前提：Mac 上已安装 WorkBuddy 桌面端并登录过（登录态按机器独立保存）。若旧版客户端（v5.6 前）登录态为明文字段，脚本自动兼容；v5.6+ 加密登录态的静态钥跨平台是否一致未验证，见"维护注意 §5"。合盖睡眠错过的运行，唤醒后由 launchd 自动补跑。日志同样写入 `scripts\checkin.log`。
+前提：Mac 上已安装 WorkBuddy 桌面端并登录过（登录态按机器独立保存；系统版本装不上客户端时，可从 Windows 拷登录态文件并用 `WORKBUDDY_AUTH_FILE` 指向它，token 约 60 天过期后需回源机器重拷）。若旧版客户端（v5.6 前）登录态为明文字段，脚本自动兼容；v5.6+ 加密登录态的静态钥跨平台是否一致未验证，见"维护注意 §5"。合盖睡眠错过的运行，唤醒后由 launchd 自动补跑。日志同样写入 `scripts\checkin.log`。
 
 ## 维护注意
 
