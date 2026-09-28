@@ -21,6 +21,7 @@ node "C:\Sources\workbuddy-checkin\scripts\api_checkin.mjs" --status   # 只读�
 ## 技术要点
 
 - 登录态文件：`%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`，取 `auth.accessToken`（Bearer）与 `account.uid`
+- **v5.6+ 静态加密**：accessToken/nickname 等敏感字段为 `{ $wbEncrypted: 1, envelope }` 加密对象，脚本用编译期静态钥（sha256 后作 AES-256-GCM key，AAD 域 `WB-AAD\0`）就地解密；静态钥变更时按 README 维护注意重新提取
 - API：`POST https://copilot.tencent.com/v2/billing/meter/checkin-activity-status`（查询）与 `/v2/billing/meter/daily-checkin`（领取），body 为 `{"uid": ...}`
 - 状态字段：`data.today_checked_in`（是否已签）、`streak_days`（连续天数）、`theme_name`（活动名）
 - 流程幂等：先查状态，已签跳过，未签才领，领后复核
@@ -37,6 +38,7 @@ node "C:\Sources\workbuddy-checkin\scripts\api_checkin.mjs" --status   # 只读�
 | 退出码 2 | 登录态过期：打开一次 WorkBuddy 桌面端自动刷新（约 60 天过期一次） |
 | 退出码 4 | 接口变更或活动结束（Buddy加油站为限时活动）：用 `--status` 验证，必要时重新逆向接口 |
 | 退出码 3 | 网络问题，稍后重试 |
+| 日志报"解密 accessToken 失败" | 客户端更换了静态钥：按 README"维护注意 §5"重新提取并更新脚本内 `STATIC_SECRET` |
 
 ## 注意
 

@@ -14,7 +14,7 @@ POST /v2/billing/meter/daily-checkin             # 执行领取
 脚本流程（幂等，重复运行不会重复领取）：
 
 1. 读取登录态文件 `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info`
-2. 提取 `auth.accessToken` 和 `account.uid`（Bearer 认证）
+2. 提取 `auth.accessToken`（v5.6+ 为加密字段，脚本就地解密）和 `account.uid`（Bearer 认证）
 3. 查询状态 → 未签到则领取 → 复核 → 输出结果与日志
 
 签到入口在客户端的位置：左下角用户头像 → 弹层内"积分余额"上方的加油站入口。脚本无需任何界面操作。
@@ -31,7 +31,7 @@ node scripts/api_checkin.mjs --no-jitter # 完整签到但跳过随机延迟
 
 **客户端 UA（防风控）**：请求携带与桌面端一致的 User-Agent（`WorkBuddy/<版本> Chrome/... Electron/...`）。版本号动态解析自安装目录 `app.asar`，客户端升级后自动跟随；读不到时回退内置版本。可用 `WORKBUDDY_UA` 环境变量完全覆盖。
 
-环境变量（可选）：`WORKBUDDY_API_BASE`（默认 `https://copilot.tencent.com`）、`WORKBUDDY_AUTH_FILE`（自定义登录态路径）、`WORKBUDDY_UA`（自定义 UA）。
+环境变量（可选）：`WORKBUDDY_API_BASE`（默认 `https://copilot.tencent.com`）、`WORKBUDDY_AUTH_FILE`（自定义登录态路径）、`WORKBUDDY_UA`（自定义 UA）、`WORKBUDDY_STATIC_SECRET`（覆盖内置静态解密钥，mac 端钥不同时在 launchd 注入即可，无需改代码）。
 
 退出码：`0` 成功或已签到 / `1` 脚本错误 / `2` 登录态失效 / `3` 网络异常 / `4` 业务错误。
 
@@ -69,9 +69,19 @@ bash scripts/setup_launchd.sh uninstall  # 卸载
 ## 维护注意
 
 1. **登录态有效期约 60 天**：过期后打开一次 WorkBuddy 桌面端即自动刷新，脚本会以退出码 `2` 提示。
-2. **活动为限时活动**：Buddy加油站（2026-08-13 ~ 08-24，每日 100 积分）。活动结束后接口可能调整，脚本会以退出码 `4` 报错。
+2. **活动为限时活动**：Buddy加油站（2026-08-13 起，每日 100 积分）。活动结束后接口可能调整，脚本会以退出码 `4` 报错。
 3. **接口为非公开内部 API**：来自 [SIMON-WORLD/workbuddy-daily-credit](https://github.com/SIMON-WORLD/workbuddy-daily-credit) 的逆向结论，可能随客户端版本变化；客户端大版本更新后用 `--status` 验证一次即可。
 4. 本脚本仅读取本机登录态调用官方接口，请勿改造为多账号批量领取（有风控风险）。
+5. **客户端 v5.6+ 静态加密登录态**（2026-09-24 起生效）：`accessToken`/`nickname` 等字段变为 `{ $wbEncrypted: 1, envelope }` 加密对象。脚本内置编译期静态钥（`STATIC_SECRET`，与 envelope 中 keyId `9127dea1b44020a7` 配对）做 AES-256-GCM 就地解密，AAD 域为 `WB-AAD\0`、field 格式 `WBEV1`、scheme `sym-v1`。若客户端更换静态钥（脚本报"解密 accessToken 失败"），重新提取方法：
+
+   1. 启动带主进程 inspector 的第二实例，断点拦在 app.asar 首行（防止二次实例被单实例锁退出）：
+      - **Windows**：`WorkBuddy.exe --inspect-brk=127.0.0.1:9330`
+      - **macOS**：`/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy --inspect-brk=127.0.0.1:9330`
+   2. WebSocket 连 `http://127.0.0.1:9330/json/list` 返回的 `webSocketDebuggerUrl`，先 `Debugger.enable`，再 `Debugger.setBreakpointByUrl { lineNumber: 0, urlRegex: ".*app\\.asar.*" }`，然后 `Runtime.runIfWaitingForDebugger`；
+   3. 断点命中后（`Debugger.paused` 事件）在 `callFrames[0]` 上 `Debugger.evaluateOnCallFrame` 执行 `require('electron').workbuddyStorage.loggerGet()`，返回 JSON 中的 `atRestSecretKey` 即新静态钥（注意：不能用裸 `Runtime.evaluate`——它落在无 `require`/`process` 的空上下文）；
+   4. 更新脚本 `STATIC_SECRET`（或设环境变量 `WORKBUDDY_STATIC_SECRET`），并核对 `sha256(sha256(静态钥字符串)).hex 前 16 位` 与 keyblob（`~/.workbuddy/keyblob`）里 `slots[].protectorKeyId` 及 auth envelope 的 `keyId` 一致。
+
+   **macOS 注意**：静态钥是编译期嵌入二进制的，Windows 与 macOS 为独立构建，**静态钥可能不同**。Mac 部署后先跑 `node scripts/api_checkin.mjs --status` 验证：200 即两平台同钥；报"解密 accessToken 失败"则按上述步骤在 Mac 上重新提取（inspector 流程跨平台一致），提取到的新钥通过 launchd 的 `EnvironmentVariables` 注入 `WORKBUDDY_STATIC_SECRET`，或直接改脚本常量。快捷预判：Mac 上 `~/.workbuddy/keyblob` 的 `protectorKeyId` 若同为 `9127dea1b44020a7`，则无需重提。
 
 ## 历史方案（已废弃）
 
