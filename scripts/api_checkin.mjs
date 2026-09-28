@@ -11,6 +11,7 @@
 // 参考：github.com/SIMON-WORLD/workbuddy-daily-credit（Python 原版）
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -83,6 +84,46 @@ function buildUserAgent() {
 const USER_AGENT = buildUserAgent();
 
 // ---------- 1. 读取登录态 ----------
+// WorkBuddy v5.6+ 将登录态文件中的敏感字段（accessToken/nickname/phoneNumber）做静态加密：
+// 字段值变为 { $wbEncrypted: 1, envelope: "<base64 JSON>" }。
+// 加密方案（逆向自客户端 app.asar 的 at-rest-crypto 包，2026-09-28）：
+//   key   = sha256(STATIC_SECRET 的 utf8 字节)         // 32 字节 AES-256 key
+//   keyId = sha256(key).hex 前 16 位                     // 校验用，须与 envelope 内一致
+//   AAD   = "WB-AAD\0" || 0x01 || lp("WBEV1") || lp("sym-v1") || u32(suite)
+//           || lp(keyId) || 0x02 || 0x00 || 0x00         // lp=length-prefixed, 0x02=field framing
+//   明文  = AES-256-GCM(key, nonce=12B, authTag=16B, AAD)
+// STATIC_SECRET 是编译期嵌入魔改 Electron（electron.workbuddyStorage.loggerGet()）的静态钥，
+// 同版本客户端全局一致（跨平台是否一致未验证，macOS 构建可能不同）；可用环境变量
+// WORKBUDDY_STATIC_SECRET 覆盖（如 mac 端钥不同时在 launchd 中注入，无需改代码）。
+// 客户端更换静态钥时需重新提取（见 README 维护注意 §5）。
+const STATIC_SECRET = process.env.WORKBUDDY_STATIC_SECRET || 'Sik9U5aXhCdwTVEwsEySDOmDoB9r9ntFxHF1fst9LQI=';
+const STATIC_KEY = crypto.createHash('sha256').update(STATIC_SECRET, 'utf8').digest();
+
+function u32(v) { const b = Buffer.alloc(4); b.writeUInt32BE(v); return b; }
+function lp(s) { const b = Buffer.from(s, 'utf8'); return Buffer.concat([u32(b.length), b]); }
+
+function openEncryptedField(wrapper) {
+  const env = JSON.parse(Buffer.from(wrapper.envelope, 'base64').toString('utf8'));
+  const aad = Buffer.concat([
+    Buffer.from('WB-AAD\0', 'ascii'), Buffer.from([1]),
+    lp('WBEV1'), lp('sym-v1'), u32(env.suite), lp(env.keyId),
+    Buffer.from([2]), Buffer.from([0]), Buffer.from([0]),
+  ]);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', STATIC_KEY, Buffer.from(env.nonce, 'base64'), { authTagLength: 16 });
+  decipher.setAAD(aad);
+  decipher.setAuthTag(Buffer.from(env.authTag, 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(env.ciphertext, 'base64')), decipher.final()]).toString('utf8');
+}
+
+function unwrapField(value, label) {
+  if (typeof value === 'string') return value;               // 旧版客户端：明文
+  if (value && value.$wbEncrypted === 1 && typeof value.envelope === 'string') {
+    try { return openEncryptedField(value); }
+    catch (e) { throw new Error(`解密 ${label} 失败（客户端可能已更换静态钥）: ${e.message}`); }
+  }
+  return undefined;
+}
+
 function loadAuth() {
   let raw;
   try {
@@ -92,9 +133,9 @@ function loadAuth() {
   }
   let j;
   try { j = JSON.parse(raw); } catch (e) { throw new Error('登录态文件不是有效 JSON: ' + e.message); }
-  const token = j?.auth?.accessToken;
+  const token = unwrapField(j?.auth?.accessToken, 'accessToken');
   const uid = j?.account?.uid;
-  const nick = j?.account?.nickname;
+  const nick = unwrapField(j?.account?.nickname, 'nickname');
   const expiresAt = j?.auth?.expiresAt;
   if (!token || !uid) throw new Error('登录态文件中缺少 accessToken/uid，可能未登录');
   if (expiresAt && Date.now() > expiresAt) throw new Error('accessToken 已过期(expiresAt)，请打开 WorkBuddy 重新登录以刷新');
