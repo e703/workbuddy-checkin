@@ -43,6 +43,7 @@ node scripts/api_checkin.mjs --no-jitter # 完整签到但跳过随机延迟
 |------|-----------|---------|---------|
 | Windows | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\...` | 任务计划程序（已注册 `WorkBuddyDailyCheckin`，每天 00:05） | `powershell -ExecutionPolicy Bypass -File scripts\create_task.ps1` |
 | macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/...` | launchd（`com.workbuddy-checkin`，每天 00:05） | `bash scripts/setup_launchd.sh install` |
+| Linux（无头） | 需从 Win/Mac 拷贝，用 `WORKBUDDY_AUTH_FILE` 指向 | cron（`5 0 * * *`） | 见下方 Linux 段 |
 
 ### Windows
 
@@ -102,6 +103,34 @@ WORKBUDDY_STATIC_SECRET=<mac端提取的静态钥> bash scripts/setup_launchd.sh
 ```
 
 前提：Mac 上已安装 WorkBuddy 桌面端并登录过（登录态按机器独立保存；系统版本装不上客户端时，可从 Windows 拷登录态文件并用 `WORKBUDDY_AUTH_FILE` 指向它，token 约 60 天过期后需回源机器重拷）。若旧版客户端（v5.6 前）登录态为明文字段，脚本自动兼容；v5.6+ 加密登录态的静态钥跨平台是否一致未验证，见"维护注意 §5"。合盖睡眠错过的运行，唤醒后由 launchd 自动补跑。日志同样写入 `scripts\checkin.log`。
+
+### Linux（无头服务器）
+
+WorkBuddy 没有 Linux 客户端，登录态无法在本机产生，须从 Windows（或 macOS）拷贝。适合"常开 Linux 小服务器想接管签到、源机不常开机"的场景；源机已在每天签的话不必重复部署（同账号多机运行幂等无害但无意义，且多一份 60 天重拷依赖，整体可靠性反而更低）。
+
+```bash
+# 1. 装 Node（apt 版本过旧时用官方二进制或 nvm；Node 18+）
+#    sudo apt install nodejs  # 或解压官方 linux-x64 tar.xz 到 /usr/local
+
+# 2. 从 Windows 拷登录态（在 Linux 上执行，Windows 侧需开 ssh 或用 U 盘）
+scp 'user@win:%LOCALAPPDATA%/CodeBuddyExtension/Data/Public/auth/workbuddy-desktop.info' ~/workbuddy-auth.info
+chmod 600 ~/workbuddy-auth.info
+
+# 3. 拉项目并验证
+git clone https://github.com/e703/workbuddy-checkin.git && cd workbuddy-checkin
+WORKBUDDY_AUTH_FILE=$HOME/workbuddy-auth.info node scripts/api_checkin.mjs --status
+
+# 4. 验证 200 后注册 cron（环境变量写在行内，cron 不继承登录 shell）
+crontab -e
+# 加入（替换真实路径与 UA）：
+# 5 0 * * * WORKBUDDY_AUTH_FILE=/home/xx/workbuddy-auth.info WORKBUDDY_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ... WorkBuddy/5.6.2 ..." /usr/bin/node /path/to/api_checkin.mjs >> /path/to/checkin.log 2>&1
+```
+
+要点：
+
+- **UA 建议固定为 Windows 版客户端串**（`WORKBUDDY_UA` 注入，从 Windows 侧 checkin.log 里抄完整串）：真实客户端不存在 Linux 平台，默认拼出的 `X11; Linux x86_64` + `WorkBuddy/x.x` 是"不可能的设备"，若服务端做 UA 一致性校验会露馅。
+- **登录态约 60 天过期**，无头机无法自己刷新——需定期从源机（开着 WorkBuddy 的 Windows）重拷；脚本退出码 `2` 会提示。建议在监控里盯退出码或日志里的 401。
+- 服务器时钟要准（NTP），jitter 逻辑脚本内置，cron 只需 `5 0 * * *`。
 
 ## 维护注意
 
