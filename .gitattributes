@@ -1,0 +1,2 @@
+# shell 脚本必须 LF，避免 Windows clone 后 CRLF 破坏 macOS 运行
+*.sh text eol=lf

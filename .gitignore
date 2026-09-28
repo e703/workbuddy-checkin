@@ -1,0 +1,10 @@
+# 运行日志含账号 uid/昵称等个人信息，严禁提交
+scripts/checkin.log
+checkin.log
+
+# Electron CDP 调试 profile（含登录态），严禁提交
+.wb-cdp-data/
+
+# 临时文件
+.trash/
+*.tmp

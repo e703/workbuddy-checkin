@@ -42,7 +42,7 @@ node scripts/api_checkin.mjs --no-jitter # 完整签到但跳过随机延迟
 | 平台 | 登录态文件 | 定时机制 | 注册方式 |
 |------|-----------|---------|---------|
 | Windows | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\...` | 任务计划程序（已注册 `WorkBuddyDailyCheckin`，每天 00:05） | `powershell -ExecutionPolicy Bypass -File scripts\create_task.ps1` |
-| macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/...` | launchd（`com.alan.workbuddy-checkin`，每天 00:05） | `bash scripts/setup_launchd.sh install` |
+| macOS | `~/Library/Application Support/CodeBuddyExtension/Data/Public/auth/...` | launchd（`com.workbuddy-checkin`，每天 00:05） | `bash scripts/setup_launchd.sh install` |
 
 ### Windows
 
@@ -58,13 +58,23 @@ Unregister-ScheduledTask WorkBuddyDailyCheckin                     # 卸载
 ### macOS
 
 ```bash
-brew install node                        # 前提：安装 Node 18+
 bash scripts/setup_launchd.sh install    # 安装并加载 launchd 任务
 bash scripts/setup_launchd.sh run        # 立即执行一次
 bash scripts/setup_launchd.sh uninstall  # 卸载
 ```
 
-前提：Mac 上已安装 WorkBuddy 桌面端并登录过（登录态按机器独立保存）。合盖睡眠错过的运行，唤醒后由 launchd 自动补跑。日志同样写入 `scripts\checkin.log`。
+安装 Node（二选一，无需第三方依赖）：
+
+- 有 brew：`brew install node`（Node 18+）
+- 无 brew（如旧 Intel 机、macOS 12）：从 [nodejs.org](https://nodejs.org/) 下载官方 `darwin-x64` 安装包（.pkg，装到 `/usr/local/bin/node`；建议 22 LTS）。没有管理员权限则下载 .tar.xz 解压到用户目录，把 `bin` 加进 PATH 后再跑 `setup_launchd.sh`（脚本用 `command -v node` 定位，装在默认路径即可被找到）。
+
+安装 launchd 时，shell 里已设置的 `WORKBUDDY_*` 环境变量（如 `WORKBUDDY_STATIC_SECRET`、`WORKBUDDY_AUTH_FILE`）会被固化进 plist 的 `EnvironmentVariables`——launchd 不继承登录 shell 环境，所以 Mac 端专属配置必须在 install 时带上，例如：
+
+```bash
+WORKBUDDY_STATIC_SECRET=<mac端提取的静态钥> bash scripts/setup_launchd.sh install
+```
+
+前提：Mac 上已安装 WorkBuddy 桌面端并登录过（登录态按机器独立保存）。若旧版客户端（v5.6 前）登录态为明文字段，脚本自动兼容；v5.6+ 加密登录态的静态钥跨平台是否一致未验证，见"维护注意 §5"。合盖睡眠错过的运行，唤醒后由 launchd 自动补跑。日志同样写入 `scripts\checkin.log`。
 
 ## 维护注意
 
